@@ -37,7 +37,6 @@ namespace AppSettingsKing
 
             // populate internal state
             _entries = new List<DataEntry>(InitialSettingsFileEntriesCapacity);
-            _formatter = new DefaultDataFormatter();
         }
 
         public AppSettingsFile(string fileName, IDataFormatter dataFormatter)
@@ -137,6 +136,8 @@ namespace AppSettingsKing
 
         public void Load()
         {
+            var dataFormatter = _formatter ?? _defaultDataFormatter;
+
             // try open file and read data
             using (var fileStream = File.Open(FullFileName, FileMode.Open))
             using (var binaryReader = new BinaryReader(fileStream))
@@ -173,7 +174,7 @@ namespace AppSettingsKing
                     var data = binaryReader.ReadBytes(dataSize);
 
                     // process data by formatter
-                    data = _formatter.ProcessBack(data);
+                    data = dataFormatter.ProcessBack(data);
 
                     // create entry
                     entries.Add(new DataEntry(entryName, data));
