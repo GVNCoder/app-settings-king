@@ -22,9 +22,10 @@ namespace AppSettingsKing
 
         #endregion
 
-        private readonly List<DataEntry> _entries;
+        private List<DataEntry> _entries;
+
         private readonly IDataFormatter _formatter;
-        private readonly Encoding _dataEncoding;
+        private readonly IDataFormatter _defaultDataFormatter = new DefaultDataFormatter();
 
         #region Ctors
 
@@ -37,7 +38,6 @@ namespace AppSettingsKing
             // populate internal state
             _entries = new List<DataEntry>(InitialSettingsFileEntriesCapacity);
             _formatter = new DefaultDataFormatter();
-            _dataEncoding = Encoding.ASCII;
         }
 
         public AppSettingsFile(string fileName, IDataFormatter dataFormatter)
@@ -47,28 +47,31 @@ namespace AppSettingsKing
             _formatter = dataFormatter ?? new DefaultDataFormatter();
         }
 
-        public AppSettingsFile(string fileName, IDataFormatter dataFormatter, Encoding dataEncoding)
-            : this(fileName, dataFormatter)
-        {
-            // populate internal state
-            _dataEncoding = dataEncoding ?? Encoding.ASCII;
-        }
-
         #endregion
 
         #region Private methods
 
-        private void _CreateEntryImpl(string entryName, byte[] buffer)
+        private byte[] GenerateFileContent()
         {
-            var entry = new DataEntry(entryName, buffer);
-            _entries.Add(entry);
-        }
+            var dataFormatter = _formatter ?? _defaultDataFormatter;
 
-        private byte[] _GetEntryBuffer(string entryName)
-        {
-            // try get entry
-            var entry = _entries.SingleOrDefault(e => e.EntryName == entryName);
-            return entry?.Data;
+            using (var memoryStream = new MemoryStream())
+            using (var binaryWriter = new BinaryWriter(memoryStream))
+            {
+                foreach (var dataEntry in _entries)
+                {
+                    // preprocess data by formatter
+                    var entryData = dataFormatter.Process(dataEntry.Data);
+                    var entryDataSize = entryData.Length;
+
+                    // write entry
+                    binaryWriter.Write(dataEntry.EntryName);
+                    binaryWriter.Write(entryDataSize);
+                    binaryWriter.Write(entryData);
+                }
+
+                return memoryStream.ToArray();
+            }
         }
 
         #endregion
@@ -104,13 +107,15 @@ namespace AppSettingsKing
             }
 
             // ok, we can go forward
-            _CreateEntryImpl(entryName, buffer);
+            var entry = new DataEntry(entryName, buffer);
+            _entries.Add(entry);
         }
 
         public byte[] GetEntryBuffer(string entryName)
         {
-            var buffer = _GetEntryBuffer(entryName);
-            return buffer;
+            // try get entry
+            var entry = _entries.SingleOrDefault(e => e.EntryName == entryName);
+            return entry?.Data;
         }
 
         public bool RemoveEntry(string entryName)
@@ -130,12 +135,11 @@ namespace AppSettingsKing
             return _entries.AsReadOnly();
         }
 
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE0063:Use simple 'using' statement", Justification = "<Pending>")]
         public void Load()
         {
             // try open file and read data
             using (var fileStream = File.Open(FullFileName, FileMode.Open))
-            using (var binaryReader = new BinaryReader(fileStream, _dataEncoding))
+            using (var binaryReader = new BinaryReader(fileStream))
             {
                 // validate file content
                 var sourceFileContentHash = binaryReader.ReadBytes(FileContentHashSize);
@@ -158,6 +162,8 @@ namespace AppSettingsKing
                     }
                 }
 
+                var entries = new List<DataEntry>(InitialSettingsFileEntriesCapacity);
+
                 // ok, lets read file entries
                 fileStream.Seek(contentPosition, SeekOrigin.Begin);
                 while (binaryReader.PeekChar() != -1)
@@ -170,8 +176,11 @@ namespace AppSettingsKing
                     data = _formatter.ProcessBack(data);
 
                     // create entry
-                    _entries.Add(new DataEntry(entryName, data));
+                    entries.Add(new DataEntry(entryName, data));
                 }
+
+                // save results
+                _entries = entries;
             }
         }
 
@@ -183,39 +192,20 @@ namespace AppSettingsKing
                 throw new InvalidOperationException("Nothing to save.");
             }
 
-            using (var memoryStream = new MemoryStream())
+            using (var fileStream = File.Open(FullFileName, FileMode.OpenOrCreate))
             {
-                // write content
-                using (var streamWriter = new BinaryWriter(memoryStream, Encoding.ASCII, true))
+                // truncate file content
+                fileStream.SetLength(0);
+
+                // write file
+                using (var md5 = MD5.Create())
                 {
-                    foreach (var dataEntry in _entries)
-                    {
-                        //var entryNameLength = dataEntry.EntryName.Length;
-                        var entryDataLength = dataEntry.Data.Length;
+                    var fileContentBuffer = GenerateFileContent();
+                    var fileContentHash = md5.ComputeHash(fileContentBuffer);
 
-                        // write entry
-                        //streamWriter.Write(entryNameLength);
-                        streamWriter.Write(dataEntry.EntryName);
-                        streamWriter.Write(entryDataLength);
-                        streamWriter.Write(dataEntry.Data);
-                    }
-                }
-
-                using (var fileStream = File.Open(FullFileName, FileMode.OpenOrCreate))
-                {
-                    // cleanup file content
-                    fileStream.SetLength(0);
-
-                    using (var hashCalculator = MD5.Create())
-                    {
-                        var fileContentHash = hashCalculator.ComputeHash(memoryStream.ToArray());
-                        //var fileContentHashLength = BitConverter.GetBytes(fileContentHash.Length);
-
-                        // save in file
-                        //fileStream.Write(fileContentHashLength);
-                        fileStream.Write(fileContentHash);
-                        fileStream.Write(memoryStream.ToArray());
-                    }
+                    // save in file
+                    fileStream.Write(fileContentHash);
+                    fileStream.Write(fileContentBuffer);
                 }
             }
         }
