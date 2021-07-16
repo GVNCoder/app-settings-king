@@ -22,7 +22,7 @@ namespace AppSettingsKing
 
         #endregion
 
-        private readonly byte[] _emptyBuffer = { };
+        private readonly byte[] _emptyBuffer = Array.Empty<byte>();
 
         private readonly IDataFormatter _dataFormatter;
         private readonly CreateDataFormatterAction _createDataFormatterAction;
