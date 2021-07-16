@@ -10,10 +10,5 @@ namespace AppSettingsKing
         {
             return stream.Length - stream.Position;
         }
-
-        public static int CountAvailableBytesInt32(this Stream stream)
-        {
-            return (int) CountAvailableBytes(stream);
-        }
     }
 }

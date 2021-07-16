@@ -4,6 +4,7 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 
+// ReSharper disable InvertIf
 // ReSharper disable MemberCanBePrivate.Global
 // ReSharper disable ConvertIfStatementToReturnStatement
 
@@ -12,19 +13,22 @@ namespace AppSettingsKing
     /// <summary>
     /// 
     /// </summary>
-    public class AppSettingsFile : ISettingsFile
+    public class AppSettingsFile
     {
         #region Constants
 
-        private const int InitialSettingsFileEntriesCapacity = 5;
+        private const int InitialSettingsFileEntriesCapacity = 8;
         private const int FileContentHashSize = 16;
 
         #endregion
 
-        private List<DataEntry> _entries;
+        private readonly byte[] _emptyBuffer = { };
 
-        private readonly IDataFormatter _formatter;
-        private readonly IDataFormatter _defaultDataFormatter = new DefaultDataFormatter();
+        private readonly IDataFormatter _dataFormatter;
+        private readonly CreateDataFormatterAction _createDataFormatterAction;
+
+        private List<DataEntry> _entries;
+        private byte[] _headerServiceData;
 
         #region Ctors
 
@@ -42,7 +46,14 @@ namespace AppSettingsKing
             : this(fileName)
         {
             // populate internal state
-            _formatter = dataFormatter ?? new DefaultDataFormatter();
+            _dataFormatter = dataFormatter;
+        }
+
+        public AppSettingsFile(string fileName, CreateDataFormatterAction createDataFormatterAction)
+            : this(fileName)
+        {
+            // populate internal state
+            _createDataFormatterAction = createDataFormatterAction;
         }
 
         #endregion
@@ -51,15 +62,13 @@ namespace AppSettingsKing
 
         private byte[] GenerateFileContent()
         {
-            var dataFormatter = _formatter ?? _defaultDataFormatter;
-
             using (var memoryStream = new MemoryStream())
             using (var binaryWriter = new BinaryWriter(memoryStream))
             {
                 foreach (var dataEntry in _entries)
                 {
                     // preprocess data by formatter
-                    var entryData = dataFormatter.Process(dataEntry.Data);
+                    var entryData = dataEntry.Data;
                     var entryDataSize = entryData.Length;
 
                     // write entry
@@ -70,6 +79,62 @@ namespace AppSettingsKing
 
                 return memoryStream.ToArray();
             }
+        }
+
+        private static FileHeaderData ReadFileHeader(BinaryReader binaryReader)
+        {
+            var contentHash = binaryReader.ReadBytes(FileContentHashSize);
+            var serviceDataSize = binaryReader.ReadInt32();
+            var serviceData = binaryReader.ReadBytes(serviceDataSize);
+
+            return new FileHeaderData { ContentHash = contentHash, ServiceData = serviceData };
+        }
+
+        private static void ThrowIfFileHashNotEqual(byte[] content, FileHeaderData fileHeader)
+        {
+            using (var md5Hash = MD5.Create())
+            {
+                var realFileContentHash = md5Hash.ComputeHash(content);
+                if (realFileContentHash.SequenceEqual(fileHeader.ContentHash) == false)
+                {
+                    var sourceHash = BitConverter.ToString(fileHeader.ContentHash)
+                        .Replace("-", string.Empty)
+                        .ToLowerInvariant();
+                    var realHash = BitConverter.ToString(realFileContentHash)
+                        .Replace("-", string.Empty)
+                        .ToLowerInvariant();
+
+                    throw new InvalidFileHashException(sourceHash, realHash);
+                }
+            }
+        }
+
+        private IDataFormatter CreateDataFormatter(byte[] serviceData)
+        {
+            var dataFormatter = _createDataFormatterAction?.Invoke(serviceData);
+            return dataFormatter ?? _dataFormatter ?? new DefaultDataFormatter();
+        }
+
+        private static List<DataEntry> ParseDataEntries(byte[] content)
+        {
+            var entries = new List<DataEntry>(InitialSettingsFileEntriesCapacity);
+
+            using (var contentMemoryStream = new MemoryStream(content))
+            using (var contentBinaryReader = new BinaryReader(contentMemoryStream))
+            {
+                // ok, lets read file entries
+                while (contentBinaryReader.PeekChar() != -1)
+                {
+                    var entryName = contentBinaryReader.ReadString();
+                    var dataSize = contentBinaryReader.ReadInt32();
+                    var data = contentBinaryReader.ReadBytes(dataSize);
+
+                    // create entry
+                    entries.Add(new DataEntry(entryName, data));
+                }
+            }
+
+            return entries;
         }
 
         #endregion
@@ -133,54 +198,39 @@ namespace AppSettingsKing
             return _entries.AsReadOnly();
         }
 
+        public void AddOrReplaceHeaderServiceData(byte[] serviceData)
+        {
+            // do some validation
+            if (serviceData == null)
+            {
+                throw new ArgumentNullException(nameof(serviceData));
+            }
+
+            if (serviceData.Length == 0)
+            {
+                throw new EmptyBufferException();
+            }
+
+            _headerServiceData = serviceData;
+        }
+
         public void Load()
         {
-            var dataFormatter = _formatter ?? _defaultDataFormatter;
-
-            // try open file and read data
             using (var fileStream = File.Open(FullFileName, FileMode.Open))
             using (var binaryReader = new BinaryReader(fileStream))
             {
+                // read header and file content
+                var fileHeader = ReadFileHeader(binaryReader);
+                var content = binaryReader.ReadBytes((int) fileStream.CountAvailableBytes());
+
                 // validate file content
-                var sourceFileContentHash = binaryReader.ReadBytes(FileContentHashSize);
-                var contentPosition = fileStream.Position;
-
                 // compute hash and check file integrity
-                using (var md5Hash = MD5.Create())
-                {
-                    var realFileContentHash = md5Hash.ComputeHash(fileStream);
-                    if (realFileContentHash.SequenceEqual(sourceFileContentHash) == false)
-                    {
-                        var sourceHash = BitConverter.ToString(sourceFileContentHash)
-                            .Replace("-", string.Empty)
-                            .ToLowerInvariant();
-                        var realHash = BitConverter.ToString(realFileContentHash)
-                            .Replace("-", string.Empty)
-                            .ToLowerInvariant();
+                ThrowIfFileHashNotEqual(content, fileHeader);
 
-                        throw new InvalidFileHashException(sourceHash, realHash);
-                    }
-                }
+                var dataFormatter = CreateDataFormatter(fileHeader.ServiceData);
+                var originalContent = dataFormatter.ProcessBack(content);
 
-                var entries = new List<DataEntry>(InitialSettingsFileEntriesCapacity);
-
-                // ok, lets read file entries
-                fileStream.Seek(contentPosition, SeekOrigin.Begin);
-                while (binaryReader.PeekChar() != -1)
-                {
-                    var entryName = binaryReader.ReadString();
-                    var dataSize = binaryReader.ReadInt32();
-                    var data = binaryReader.ReadBytes(dataSize);
-
-                    // process data by formatter
-                    data = dataFormatter.ProcessBack(data);
-
-                    // create entry
-                    entries.Add(new DataEntry(entryName, data));
-                }
-
-                // save results
-                _entries = entries;
+                _entries = ParseDataEntries(originalContent);
             }
         }
 
@@ -192,20 +242,34 @@ namespace AppSettingsKing
                 throw new InvalidOperationException("Nothing to save.");
             }
 
+            var dataFormatter = CreateDataFormatter(_headerServiceData);
+            var content = GenerateFileContent();
+
+            // process data
+            var formattedContent = dataFormatter.Process(content);
+            var serviceData = _headerServiceData ?? _emptyBuffer;
+
+            byte[] contentHash;
+
+            using (var md5 = MD5.Create())
+            {
+                contentHash = md5.ComputeHash(formattedContent);
+            }
+
             using (var fileStream = File.Open(FullFileName, FileMode.OpenOrCreate))
             {
                 // truncate file content
                 fileStream.SetLength(0);
 
-                // write file
-                using (var md5 = MD5.Create())
+                using (var binaryWriter = new BinaryWriter(fileStream))
                 {
-                    var fileContentBuffer = GenerateFileContent();
-                    var fileContentHash = md5.ComputeHash(fileContentBuffer);
+                    // write header
+                    binaryWriter.Write(contentHash);
+                    binaryWriter.Write(serviceData.Length);
+                    binaryWriter.Write(serviceData);
 
-                    // save in file
-                    fileStream.Write(fileContentHash);
-                    fileStream.Write(fileContentBuffer);
+                    // write content
+                    binaryWriter.Write(formattedContent);
                 }
             }
         }

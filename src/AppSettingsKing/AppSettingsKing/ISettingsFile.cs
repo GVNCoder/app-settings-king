@@ -34,6 +34,11 @@ namespace AppSettingsKing
         /// <param name="entryName"></param>
         /// <returns></returns>
         bool RemoveEntry(string entryName);
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="serviceData"></param>
+        void AddOrReplaceHeaderServiceData(byte[] serviceData);
 
         /// <summary>
         /// 

@@ -9,6 +9,8 @@ namespace libTest
         {
             var settingsFile = new AppSettingsFile("testFile.bruh", new DeflateDataFormatter());
 
+            //settingsFile.AddOrReplaceHeaderServiceData(new byte[] { 0x00 });
+
             using (var dataStream = new MemoryStream())
             using (var writer = new BinaryWriter(dataStream))
             {

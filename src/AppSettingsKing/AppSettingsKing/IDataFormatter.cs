@@ -1,6 +1,4 @@
-﻿using System.IO;
-
-namespace AppSettingsKing
+﻿namespace AppSettingsKing
 {
     /// <summary>
     /// 
